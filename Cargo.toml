@@ -1,0 +1,19 @@
+[package]
+name = "bind_Test"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "gpu_processing"
+crate-type = ["cdylib"] 
+
+[build-dependencies]
+cbindgen = "0.18.0"
+
+[dependencies]
+bytemuck = "1.14.0"
+flume = "0.11.0"
+futures = "0.3.29"
+pollster = "0.3.0"
+thiserror = "1.0.50"
+wgpu = "0.18.0"
