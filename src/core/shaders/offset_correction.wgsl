@@ -4,6 +4,8 @@ var dark_map: texture_2d<u32>;
 var input_image: texture_2d<u32>;
 @group(0) @binding(2)
 var output_image: texture_storage_2d<r32uint, write>;
+@group(0) @binding(3)
+
 
 @compute @workgroup_size(16, 16)
 fn correct_image(@builtin(global_invocation_id) global_id: vec3<u32>) {
