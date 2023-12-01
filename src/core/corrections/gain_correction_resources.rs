@@ -1,47 +1,51 @@
 use std::borrow::Cow;
-
 use pollster::block_on;
 
-use super::core::create_image_texture;
+use crate::core::core::create_image_texture;
 
 pub struct GainCorrectionResources {
     pub pipeline: wgpu::ComputePipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
+    pub norm_map_texture: wgpu::Texture,
 }
 
 impl GainCorrectionResources {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, map_data: &Vec<u16>, width: u32, height: u32) -> Self {
-        block_on(perform_gain_normalisation(device, queue, map_data, width, height, 16));
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, staging_buffer: &wgpu::Buffer, gain_map_data: &Vec<f32>, width: u32, height: u32) -> Self {
+        //block_on(perform_gain_normalisation(device, queue, map_data, width, height, 16));
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "shaders/normalise.wgsl"
+                "../shaders/gain_correction.wgsl"
             ))),
         });
 
+        let norm_map_texture = block_on(create_image_texture(&device, &queue, staging_buffer, bytemuck::cast_slice(gain_map_data), wgpu::TextureFormat::R32Float, "gain_map", width, height, 4)).unwrap();
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
+                // Normalised map
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadOnly,
+                        format: wgpu::TextureFormat::R32Float,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
                     },
                     count: None,
                 },
+                // Input image
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<u32>() as u64),
-                    },    
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadWrite,
+                        format: wgpu::TextureFormat::R16Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
                     count: None,
-                }
+                },
             ],
             label: Some("bind_group_layout"),
         });
@@ -56,16 +60,39 @@ impl GainCorrectionResources {
             label: Some("Gain Correction Pipeline Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
-            entry_point: "main",
+            entry_point: "gain_correct",
         });
 
         GainCorrectionResources {
             bind_group_layout,
-            pipeline
+            pipeline,
+            norm_map_texture
         }
+    }
+
+    pub fn get_bind_group(&self, device: &wgpu::Device, input_texture_view: &wgpu::TextureView) -> wgpu::BindGroup {
+        let norm_map_texture_view = self
+        .norm_map_texture
+        .create_view(&wgpu::TextureViewDescriptor::default());
+
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&norm_map_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&input_texture_view),
+                },
+            ],
+            label: Some("offset_correction_bind_group"),
+        })
     }
 }
 
+/*
 async fn perform_gain_normalisation(device: &wgpu::Device, queue: &wgpu::Queue, map_data: &Vec<u16>, width: u32, height: u32, workgroup_size: u32) -> Result<Vec<u32>, ()> {
     let gain_map_texture = block_on(create_image_texture(&device, &queue, &map_data, "dark_map", width, height)).unwrap();
     let gain_map_texture_view = gain_map_texture
@@ -194,3 +221,4 @@ async fn perform_gain_normalisation(device: &wgpu::Device, queue: &wgpu::Queue, 
         panic!("failed to run compute on gpu!")
     }    
 }
+*/
