@@ -1,5 +1,5 @@
 use pollster::block_on;
-use wgpu::{Instance, Buffer};
+use wgpu::{Instance, Buffer, PowerPreference};
 
 use super::{error::MyError, corrections::{gain_correction_resources::GainCorrectionResources, offset_correction::OffsetCorrectionResources}};
 
@@ -8,18 +8,20 @@ pub struct GPUResources {
     queue: wgpu::Queue,
 }
 
-pub fn initialise_gpu_resources() -> Result<GPUResources, &'static str> {
+pub fn initialise_gpu_resources(power_preference: PowerPreference) -> Result<GPUResources, &'static str> {
     let instance = Instance::default();
 
     let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
+        power_preference,
         ..Default::default()
     }))
         .ok_or("Failed to find an appropriate adapter")?;
 
+    println!("GPU adapter: {:?}", adapter.get_info());
+
     let (device, queue) = block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
-            features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS,
             limits: wgpu::Limits::default(),
             label: None,
         },
@@ -30,7 +32,7 @@ pub fn initialise_gpu_resources() -> Result<GPUResources, &'static str> {
     Ok(GPUResources { device, queue })
 }
 
-struct CorrectionContext {
+pub struct CorrectionContext {
     gpu_resources: GPUResources,
     readback_buffer: Buffer,
     staging_buffer: Buffer,
@@ -42,7 +44,7 @@ struct CorrectionContext {
 
 impl CorrectionContext {
     pub fn new(gpu_resources: GPUResources, width: u32, height: u32) -> Self {
-        let buffer_size = width * height * 4;
+        let buffer_size = width * height * 2;
 
         let staging_buffer = gpu_resources.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("My Buffer"),
@@ -61,18 +63,18 @@ impl CorrectionContext {
         CorrectionContext { gpu_resources, width, height, offset_resources: None, gain_resources: None, readback_buffer, staging_buffer }
     }
 
-    pub fn enable_offset_pipeline(&mut self, dark_map: Vec<u16>, offset: u32) {
+    pub fn enable_offset_pipeline(&mut self, dark_map: &[u16], offset: u32) {
         self.offset_resources = Some(OffsetCorrectionResources::new(&self.gpu_resources.device, &self.gpu_resources.queue, &self.staging_buffer, &dark_map, self.width, self.height, offset));
     }
 
-    pub fn enable_gain_pipeline(&mut self, gain_map: Vec<f32>) {
+    pub fn enable_gain_pipeline(&mut self, gain_map: &[f32]) {
         self.gain_resources = Some(GainCorrectionResources::new(&self.gpu_resources.device, &self.gpu_resources.queue, &self.staging_buffer,&gain_map, self.width, self.height));
     }
 
-    pub async fn process_image(&mut self, input_image: &Vec<u16>) -> Result<Vec<u16>, MyError> {
+    pub async fn process_image(&mut self, input_image: &[u16]) -> Result<Vec<u16>, MyError> {
         let input_texture = block_on(
             create_image_texture(&self.gpu_resources.device, &self.gpu_resources.queue, &self.staging_buffer, 
-                bytemuck::cast_slice(input_image), wgpu::TextureFormat::R16Uint, "input_image", self.width, self.height, 2))?;
+                bytemuck::cast_slice(&input_image), wgpu::TextureFormat::R16Uint, "input_image", self.width, self.height, 2))?;
 
         let input_texture_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -190,29 +192,20 @@ pub async fn create_image_texture(
         view_formats: &[texture_format],
     });
 
-    queue.write_buffer(staging_buffer, 0, data);
+    queue.write_texture(wgpu::ImageCopyTexture {
+        texture: &texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+    }, data,wgpu::ImageDataLayout {
+        offset: 0,
+        bytes_per_row: Some(width * byte_size),
+        rows_per_image: Some(height),
+    }, size);
 
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("texture_encoder"),
     });
-
-    encoder.copy_buffer_to_texture(
-        wgpu::ImageCopyBuffer {
-            buffer: &staging_buffer,
-            layout: wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(width * byte_size),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::ImageCopyTexture {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        size,
-    );
 
     queue.submit(Some(encoder.finish()));
     Ok(texture)
@@ -224,21 +217,22 @@ mod tests {
 
     use pollster::block_on;
 
-    use super::{initialise_gpu_resources, CorrectionContext, GPUResources};
+    use super::{initialise_gpu_resources, CorrectionContext};
 
     #[test]
     fn test_dark_correction() {
-        let gpu_resources = initialise_gpu_resources().unwrap();
+        let gpu_resources = initialise_gpu_resources(wgpu::PowerPreference::HighPerformance).unwrap();
 
-        let mut correction_context = CorrectionContext::new(gpu_resources, 2048, 2048);
+        let mut correction_context = CorrectionContext::new(gpu_resources, 3072, 3072);
 
-        let dark_data = vec![3000; 2048*2048];
-        correction_context.enable_offset_pipeline(dark_data, 300);
+        let dark_data = vec![3000; 3072*3072];
+        correction_context.enable_offset_pipeline(&dark_data, 300);
 
-        let image_data = vec![8000; 2048*2048];
+        let image_data = vec![8000; 3072*3072];
         let start = Instant::now();
         for i in 0..1000 {
             let data = block_on(correction_context.process_image(&image_data)).unwrap();
+            
         }
         println!("Total time {:?}", start.elapsed() / 1000);
     }
@@ -246,13 +240,13 @@ mod tests {
     #[test]
     fn test_gain_correction() {
         println!("Running test gain correction");
-        let gpu_resources = initialise_gpu_resources().unwrap();
-        let mut correction_context = CorrectionContext::new(gpu_resources, 2048, 2048);
+        let gpu_resources = initialise_gpu_resources(wgpu::PowerPreference::HighPerformance).unwrap();
+        let mut correction_context = CorrectionContext::new(gpu_resources, 3072, 3072);
 
-        let norm_map = vec![0.5; 2048 * 2048];
-        correction_context.enable_gain_pipeline(norm_map);
+        let norm_data: Vec<f32> =  vec![0.5; 3072*3072];
+        correction_context.enable_gain_pipeline(&norm_data);
 
-        let image_data = vec![8000; 2048*2048];
+        let image_data = vec![8000; 3072*3072];
         let start = Instant::now();
         for i in 0..1000 {
             let data = block_on(correction_context.process_image(&image_data)).unwrap();
@@ -262,14 +256,14 @@ mod tests {
 
     #[test]
     fn test_two_corrections() {
-        let gpu_resources = initialise_gpu_resources().unwrap();
+        let gpu_resources = initialise_gpu_resources(wgpu::PowerPreference::HighPerformance).unwrap();
         let mut correction_context = CorrectionContext::new(gpu_resources, 2048, 2048);
 
-        let dark_data = vec![3000; 2048*2048];
-        correction_context.enable_offset_pipeline(dark_data, 300);
+        let dark_data: [u16; 2048 * 2048] = [3000; 2048*2048];
+        correction_context.enable_offset_pipeline(&dark_data, 300);
 
-        let norm_map = vec![0.5; 2048 * 2048];
-        correction_context.enable_gain_pipeline(norm_map);
+        let norm_data: [f32; 2048 * 2048] = [0.5; 2048*2048];
+        correction_context.enable_gain_pipeline(&norm_data);
 
         let image_data = vec![8000; 2048*2048];
         let data = block_on(correction_context.process_image(&image_data)).unwrap();

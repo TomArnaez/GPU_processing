@@ -13,5 +13,5 @@ fn main() {
         .with_config(config)
         .generate()
         .expect("Cannot generate header file!")
-        .write_to_file("testprogram/headers/mycrate.h");
+        .write_to_file("testprogram/headers/gpu.h");
 }
