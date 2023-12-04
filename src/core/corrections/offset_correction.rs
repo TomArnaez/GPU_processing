@@ -17,7 +17,7 @@ impl OffsetCorrectionResources {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../shaders/offset_correction.wgsl"
+                "../shaders/offset_correction_16.wgsl"
             ))),
         });
 
@@ -46,11 +46,7 @@ impl OffsetCorrectionResources {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadWrite,
-                        format: wgpu::TextureFormat::R16Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
                 // Offset
@@ -60,6 +56,7 @@ impl OffsetCorrectionResources {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+
             ],
             label: Some("Bind Group Layout"),
         });
@@ -74,7 +71,7 @@ impl OffsetCorrectionResources {
             label: Some("Compute Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
-            entry_point: "correct_image", // Name of the compute function in your WGSL
+            entry_point: "main",
         });
 
         OffsetCorrectionResources {
@@ -85,10 +82,12 @@ impl OffsetCorrectionResources {
         }
     }
 
-    pub fn get_bind_group(&self, device: &wgpu::Device, input_texture_view: &wgpu::TextureView) -> wgpu::BindGroup {
+    pub fn get_bind_group(&self, device: &wgpu::Device, input_image: &[u16], readback_buffer: &wgpu::Buffer) -> wgpu::BindGroup {
         let dark_map_texture_view = self
         .dark_map_texture
         .create_view(&wgpu::TextureViewDescriptor::default());
+
+
 
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.bind_group_layout,
@@ -99,12 +98,12 @@ impl OffsetCorrectionResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&input_texture_view),
+                    resource: readback_buffer.as_entire_binding()
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.offset_uniform_buffer.as_entire_binding()
-                }
+                },
             ],
             label: Some("offset_correction_bind_group"),
         })

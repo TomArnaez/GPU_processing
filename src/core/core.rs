@@ -1,5 +1,7 @@
+use std::{time::Instant, borrow::BorrowMut};
+
 use pollster::block_on;
-use wgpu::{Instance, Buffer, PowerPreference};
+use wgpu::{Instance, Buffer, PowerPreference, util::DeviceExt};
 
 use super::{error::MyError, corrections::{gain_correction_resources::GainCorrectionResources, offset_correction::OffsetCorrectionResources}};
 
@@ -56,7 +58,7 @@ impl CorrectionContext {
         let readback_buffer = gpu_resources.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Readback Buffer"),
             size: buffer_size as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
@@ -72,17 +74,23 @@ impl CorrectionContext {
     }
 
     pub async fn process_image(&mut self, input_image: &[u16]) -> Result<Vec<u16>, MyError> {
-        let input_texture = block_on(
-            create_image_texture(&self.gpu_resources.device, &self.gpu_resources.queue, &self.staging_buffer, 
-                bytemuck::cast_slice(&input_image), wgpu::TextureFormat::R16Uint, "input_image", self.width, self.height, 2))?;
-
-        let input_texture_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let buffer_slice = self.readback_buffer.slice(..);
+        let (sender, receiver) = flume::bounded(1);
+        buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+        self.gpu_resources.device.poll(wgpu::Maintain::Wait);
+        if let Ok(Ok(())) = receiver.recv_async().await {
+            let mut buffer_view = buffer_slice.get_mapped_range_mut();
+            let data_bytes = bytemuck::cast_slice(&input_image);
+            buffer_view.copy_from_slice(data_bytes);
+            drop(buffer_view);
+            self.readback_buffer.unmap();
+        }
 
         let workgroup_size_x = 16;
         let workgroup_size_y = 16;
         let dispatch_size_x = (self.width + workgroup_size_x - 1) / workgroup_size_x;
         let dispatch_size_y = (self.height + workgroup_size_y - 1) / workgroup_size_y;
-
+        
         let mut encoder = self
         .gpu_resources.device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -91,7 +99,7 @@ impl CorrectionContext {
 
         if let Some(offset_resources) = &self.offset_resources
         {
-            let bind_group = offset_resources.get_bind_group(&self.gpu_resources.device, &input_texture_view);
+            let bind_group = offset_resources.get_bind_group(&self.gpu_resources.device, &input_image, &self.readback_buffer);
             let pipeline = &offset_resources.pipeline;
 
             let mut compute_pass: wgpu::ComputePass<'_> = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -104,6 +112,7 @@ impl CorrectionContext {
             compute_pass.dispatch_workgroups(dispatch_size_x, dispatch_size_y, 1);
         }
 
+        /*
         if let Some(gain_resources) = &self.gain_resources {
             let bind_group = gain_resources.get_bind_group(&self.gpu_resources.device, &input_texture_view);
             let pipeline = &gain_resources.pipeline;
@@ -117,7 +126,9 @@ impl CorrectionContext {
             compute_pass.set_bind_group(0, &bind_group, &[]);
             compute_pass.dispatch_workgroups(dispatch_size_x, dispatch_size_y, 1);
         }
+        */
 
+        /*
         encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTexture {
                 texture: &input_texture,
@@ -139,8 +150,11 @@ impl CorrectionContext {
                 depth_or_array_layers: 1,
             },
         );
+        */
 
         self.gpu_resources.queue.submit(Some(encoder.finish()));
+        let start = Instant::now();
+
 
         let buffer_slice = self.readback_buffer.slice(..);
         let (sender, receiver) = flume::bounded(1);
@@ -229,14 +243,14 @@ mod tests {
         correction_context.enable_offset_pipeline(&dark_data, 300);
 
         let image_data = vec![8000; 3072*3072];
-        let start = Instant::now();
-        for i in 0..1000 {
+        let start: Instant = Instant::now();
+        for i in 0..100 {
             let data = block_on(correction_context.process_image(&image_data)).unwrap();
-            
         }
-        println!("Total time {:?}", start.elapsed() / 1000);
+        println!("Total time {:?}", start.elapsed() / 100);
     }
 
+    /*
     #[test]
     fn test_gain_correction() {
         println!("Running test gain correction");
@@ -268,4 +282,5 @@ mod tests {
         let image_data = vec![8000; 2048*2048];
         let data = block_on(correction_context.process_image(&image_data)).unwrap();
     }
+    */
 }
