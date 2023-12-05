@@ -12,5 +12,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let dark_pixel = textureLoad(dark_map, vec2<i32>(x, y));
 
-    image[x + y * (3071)] = 300u;
+    let value = image[x + y * (3071)];
+    let lower_u16 = (value & 0xFFFFu) - dark_pixel[0] + offset;
+    var upper_u16 = ((value >> u32(16)) & 0xFFFFu) - dark_pixel[0] + offset;
+
+    image[x + y * 3071] = (upper_u16 << u32(16)) | lower_u16;
 }
