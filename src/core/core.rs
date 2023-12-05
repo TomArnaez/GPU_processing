@@ -110,7 +110,6 @@ impl CorrectionContext {
     }
 
     pub async fn process_image(&mut self, input_image: &Vec<u16>) -> Result<Vec<u16>, MyError> {
-        //let time = Instant::now();
         let input_texture = block_on(create_image_texture(
             &self.gpu_resources.device,
             &self.gpu_resources.queue,
@@ -122,8 +121,6 @@ impl CorrectionContext {
             self.height,
             2,
         ))?;
-
-        //println!("Creating texture time {:?}", time.elapsed());
 
         let input_texture_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -188,14 +185,12 @@ impl CorrectionContext {
         );
 
         self.gpu_resources.queue.submit(Some(encoder.finish()));
-        //let processing_time = Instant::now();
 
         let (sender, receiver) = flume::bounded(1);
         let buffer_slice = self.readback_buffer.slice(..);
         buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
         self.gpu_resources.device.poll(wgpu::Maintain::Wait);
         if let Ok(Ok(())) = receiver.recv_async().await {
-            //println!("Processing time {:?}", processing_time.elapsed());
             let data = buffer_slice.get_mapped_range();
             //let reading_time = Instant::now();
             let result = bytemuck::cast_slice(&data).to_vec();
@@ -285,16 +280,29 @@ mod tests {
     fn test_dark_correction() {
         let gpu_resources = initialise_gpu_resources().unwrap();
 
-        let mut correction_context = CorrectionContext::new(gpu_resources, 3072, 3072);
+        let mut correction_context = CorrectionContext::new(gpu_resources, 6144, 6144);
 
-        let dark_data = vec![3000; 3072 * 3072];
+        let mut dark_data = vec![0; 6144 * 6144];
+
+        dark_data[0] = 1;
+
         correction_context.enable_offset_pipeline(dark_data, 300);
 
-        let image_data = vec![8000; 3072 * 3072];
+        let mut image_data = vec![0; 6144 * 6144];
+
+        /*
+        image_data[0] = 999;    image_data[1] = 999; image_data[2] = 999;
+        image_data[256] = 100;                        image_data[258] = 200;
+        image_data[513] = 0;    image_data[514] = 0; image_data[515] = 0;
+        */
+
+        image_data[1] = 200;
+
+
         let start = Instant::now();
-        for i in 0..100 {
-            let data = block_on(correction_context.process_image(&image_data)).unwrap();
-        }
+        let data = block_on(correction_context.process_image(&image_data)).unwrap();
+
+        println!{"{}", data[0]};
         println!("Total time {:?}", start.elapsed() / 100);
     }
 
