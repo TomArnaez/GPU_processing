@@ -12,8 +12,11 @@ cbindgen = "0.18.0"
 
 [dependencies]
 bytemuck = "1.14.0"
+env_logger = "0.10.1"
 flume = "0.11.0"
 futures = "0.3.29"
 pollster = "0.3.0"
+profiling = "1.0.11"
 thiserror = "1.0.50"
 wgpu = "0.18.0"
+wgpu-profiler = { git = "https://github.com/Wumpf/wgpu-profiler.git", version = "0.15.0" }

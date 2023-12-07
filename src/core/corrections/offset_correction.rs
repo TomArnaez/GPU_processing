@@ -13,11 +13,11 @@ pub struct OffsetCorrectionResources {
 }
 
 impl OffsetCorrectionResources {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, staging_buffer: &wgpu::Buffer, dark_map_data: &Vec<u16>, width: u32, height: u32, offset: u32) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, staging_buffer: &wgpu::Buffer, dark_map_data: &[u16], width: u32, height: u32, offset: u32) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../shaders/offset_correction.wgsl"
+                "../shaders/defect_correction_kernel.wgsl"
             ))),
         });
 

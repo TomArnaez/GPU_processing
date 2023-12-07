@@ -10,7 +10,7 @@ pub struct GainCorrectionResources {
 }
 
 impl GainCorrectionResources {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, staging_buffer: &wgpu::Buffer, gain_map_data: &Vec<f32>, width: u32, height: u32) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, staging_buffer: &wgpu::Buffer, gain_map_data: &[f32], width: u32, height: u32) -> Self {
         //block_on(perform_gain_normalisation(device, queue, map_data, width, height, 16));
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

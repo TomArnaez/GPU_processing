@@ -98,6 +98,7 @@ fn correct_image(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let neighbour_average = average_neighbours(x, y);
     let line_average = average_line(x, y, dimensions);
 
+
     let defect_pixel = textureLoad(defect_map, vec2<i32>(x, y));
     let is_defective = defect_pixel.r > 0u;
 
