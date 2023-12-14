@@ -19,23 +19,22 @@ use vulkano::{
     sync::{self, GpuFuture},
 };
 
-pub struct DefectMapBufferResources {
+pub struct DarkMapBufferResources {
     pipeline: Arc<ComputePipeline>,
+    dark_map_buffer: Subbuffer<[u16]>,
     memory_allocator: Arc<StandardMemoryAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    kernel_buffer: Subbuffer<[u16]>,
-    defect_map_buffer: Subbuffer<[u16]>,
-    direction_buffer: Subbuffer<[i32; 1]>,
 }
 
-impl DefectMapBufferResources {
+impl DarkMapBufferResources {
     pub fn new(
         device: Arc<Device>,
         queue: Arc<Queue>,
         command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
         memory_allocator: Arc<StandardMemoryAllocator>,
         descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-        defect_map: Vec<u16>,
+        dark_map: Vec<u16>,
+        offset: u32,
         image_height: u32,
         image_width: u32,
     ) -> Self {
@@ -48,67 +47,23 @@ impl DefectMapBufferResources {
                             #extension GL_EXT_shader_16bit_storage : require
                             #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 
-                            #define KERNEL_SIZE 5
-
                             layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-                            layout(set = 0, binding = 0) buffer DefectData {
-                                uint16_t defectMapData[];
+                            layout(set = 0, binding = 0) buffer DarkMapData {
+                                uint16_t darkMapData[];
                             };
-
                             layout(set = 0, binding = 1) buffer ImageData {
                                 uint16_t imageData[];
                             };
-
-                            layout(set = 0, binding = 2) buffer ResultImage {
+                            layout(set = 0, binding = 2) buffer ResultData {
                                 uint16_t resultData[];
                             };
-                   
-                            int kernel[5] = int[5](1, 2, 0, 2, 1);
-
-                            // Define the weight kernel as a constant 2D array
-                            const float weightKernel[KERNEL_SIZE][KERNEL_SIZE] = float[KERNEL_SIZE][KERNEL_SIZE](
-                                float[KERNEL_SIZE](1.0, 2.0, 3.0, 2.0, 1.0),
-                                float[KERNEL_SIZE](2.0, 3.0, 4.0, 3.0, 2.0),
-                                float[KERNEL_SIZE](3.0, 4.0, 0.0, 4.0, 3.0),
-                                float[KERNEL_SIZE](2.0, 3.0, 4.0, 3.0, 2.0),
-                                float[KERNEL_SIZE](1.0, 2.0, 3.0, 2.0, 1.0)
-                            );
-
+        
                             void main() {
-                                uint image_height = 5800;
-                                uint image_width = 4800;
-
                                 uint idx = gl_GlobalInvocationID.x;
-                                float weightedSum = 0.0;
-                                float totalWeight = 0.0;
-
-                                if (defectMapData[idx] == 1) {
-                                    for (int y = -KERNEL_SIZE / 2; y <= KERNEL_SIZE / 2; ++y) {
-                                        for (int x = -KERNEL_SIZE / 2; x <= KERNEL_SIZE / 2; ++x) {
-                                            int pixelX = int(idx % image_width) + x;
-                                            int pixelY = int(idx / image_width) + y;
-
-                                            if (pixelX >= 0 && pixelX < image_width && pixelY >= 0 && pixelY < image_height) {
-                                                uint globalIndex = pixelY * image_width + pixelX;
-                                                if (defectMapData[globalIndex] == 0) {
-                                                    weightedSum += imageData[globalIndex] * weightKernel[y + KERNEL_SIZE / 2][x + KERNEL_SIZE / 2];
-                                                    totalWeight += weightKernel[y + KERNEL_SIZE / 2][x + KERNEL_SIZE / 2];
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if (totalWeight > 0) {
-                                        resultData[idx] = uint16_t(weightedSum / totalWeight);
-                                    } else {
-                                        resultData[idx] = imageData[idx];
-                                    }
-                                } else {
-                                    resultData[idx] = imageData[idx];
-                                }
+                                resultData[idx] = imageData[idx] - darkMapData[idx] + uint16_t(300);
                             }
-                            ",
+                        ",
                 }
             }
 
@@ -124,7 +79,6 @@ impl DefectMapBufferResources {
                     .unwrap(),
             )
             .unwrap();
-
             ComputePipeline::new(
                 device.clone(),
                 None,
@@ -133,7 +87,7 @@ impl DefectMapBufferResources {
             .unwrap()
         };
 
-        let defect_map_buffer = Buffer::from_iter(
+        let dark_map_buffer = Buffer::from_iter(
             memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER,
@@ -144,37 +98,7 @@ impl DefectMapBufferResources {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            defect_map, /* number of elements, matching the image size */
-        )
-        .unwrap();
-
-        let kernel_buffer = Buffer::from_iter(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            vec![1u16, 2, 3, 2, 1],
-        )
-        .unwrap();
-
-        let direction_buffer = Buffer::from_data(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST | BufferUsage::UNIFORM_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            [0], // 0 for horizontal, 1 for vertical
+            dark_map, /* number of elements, matching the image size */
         )
         .unwrap();
 
@@ -195,13 +119,11 @@ impl DefectMapBufferResources {
 
         future.wait(None).unwrap();
 
-        DefectMapBufferResources {
+        DarkMapBufferResources {
             pipeline,
+            dark_map_buffer,
             memory_allocator,
             descriptor_set_allocator,
-            defect_map_buffer,
-            kernel_buffer,
-            direction_buffer,
         }
     }
 
@@ -222,10 +144,9 @@ impl DefectMapBufferResources {
             self.descriptor_set_allocator.clone(),
             layout.clone(),
             [
-                WriteDescriptorSet::buffer(0, self.defect_map_buffer.clone()),
-                WriteDescriptorSet::buffer(1, image_buffer.clone()),
-                WriteDescriptorSet::buffer(2, result_buffer.clone()),
-                //WriteDescriptorSet::buffer(3, self.direction_buffer.clone()),
+                WriteDescriptorSet::buffer(0, self.dark_map_buffer.clone()),
+                WriteDescriptorSet::buffer(1, image_buffer),
+                WriteDescriptorSet::buffer(2, result_buffer),
             ],
             [],
         )
@@ -240,10 +161,6 @@ impl DefectMapBufferResources {
                 0,
                 set,
             )
-            .unwrap()
-            .dispatch([dispatch_size_x, 1, 1])
-            .unwrap()
-            .update_buffer(self.direction_buffer.clone(), &[1])
             .unwrap()
             .dispatch([dispatch_size_x, 1, 1])
             .unwrap();
