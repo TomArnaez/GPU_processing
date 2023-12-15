@@ -2,8 +2,6 @@ use std::{ptr::NonNull, time::Instant};
 
 use crate::core::core::{initialise_gpu_resources, Corrections};
 
-use super::power_preference::{self, CPowerPreference};
-
 #[repr(C)]
 pub struct GPUHandle {
     correction_context: NonNull<Corrections>,
@@ -13,7 +11,6 @@ pub struct GPUHandle {
 pub extern "C" fn create_gpu_handle(
     width: u32,
     height: u32,
-    power_preference: CPowerPreference,
 ) -> *mut GPUHandle {
     // Allocate GPUResources and check for errors
     let gpu_resources = initialise_gpu_resources();
@@ -48,8 +45,8 @@ pub extern "C" fn set_dark_map(
     let dark_map: Vec<u16> = unsafe {
         Vec::from_raw_parts(
             dark_map_data,
-            (width * height) as usize,
-            (width * height) as usize,
+            size,
+            size,
         )
     };
     unsafe {
@@ -140,5 +137,24 @@ pub extern "C" fn free_gpu_handle(handle: *mut GPUHandle) {
         // Convert the raw pointer back to a Box to ensure proper deallocation
         let _handle = unsafe { Box::from_raw(handle) };
         // GPUResources will be dropped here
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::{GPUHandle, create_gpu_handle, set_dark_map};
+
+
+    #[test]
+    fn test() {
+        let image_width: u32 = 4800;
+        let image_height: u32 = 5800;
+        let offset = 300;
+        let mut data = vec![1u16; (image_height * image_width) as usize];
+
+        let handle = create_gpu_handle(image_width, image_height);
+        //set_dark_map(handle, data.as_mut_ptr(), image_width, image_height);
     }
 }

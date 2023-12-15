@@ -4,12 +4,6 @@
 #include <ostream>
 #include <new>
 
-enum class CPowerPreference {
-  None = 0,
-  LowPower = 1,
-  HighPerformance = 2,
-};
-
 struct Corrections;
 
 struct GPUHandle {
@@ -18,7 +12,7 @@ struct GPUHandle {
 
 extern "C" {
 
-GPUHandle *create_gpu_handle(uint32_t width, uint32_t height, CPowerPreference power_preference);
+GPUHandle *create_gpu_handle(uint32_t width, uint32_t height);
 
 void set_dark_map(GPUHandle *gpu_handle, uint16_t *dark_map_data, uint32_t width, uint32_t height);
 

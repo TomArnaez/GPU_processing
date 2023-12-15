@@ -55,13 +55,10 @@ impl DarkMapBufferResources {
                             layout(set = 0, binding = 1) buffer ImageData {
                                 uint16_t imageData[];
                             };
-                            layout(set = 0, binding = 2) buffer ResultData {
-                                uint16_t resultData[];
-                            };
         
                             void main() {
                                 uint idx = gl_GlobalInvocationID.x;
-                                resultData[idx] = imageData[idx] - darkMapData[idx] + uint16_t(300);
+                                imageData[idx] += (- darkMapData[idx] + uint16_t(300));
                             }
                         ",
                 }
@@ -133,7 +130,6 @@ impl DarkMapBufferResources {
         image_width: u32,
         image_height: u32,
         image_buffer: Subbuffer<[u16]>,
-        result_buffer: Subbuffer<[u16]>,
     ) {
         let local_size_x = 64;
 
@@ -146,7 +142,6 @@ impl DarkMapBufferResources {
             [
                 WriteDescriptorSet::buffer(0, self.dark_map_buffer.clone()),
                 WriteDescriptorSet::buffer(1, image_buffer),
-                WriteDescriptorSet::buffer(2, result_buffer),
             ],
             [],
         )
