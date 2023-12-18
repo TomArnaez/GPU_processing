@@ -18,7 +18,7 @@ use vulkano::{
         AllocationCreateInfo, GenericMemoryAllocator, MemoryTypeFilter, StandardMemoryAllocator,
     }, MemoryAllocateInfo},
     sync::{self, GpuFuture},
-    VulkanLibrary,
+    VulkanLibrary, Validated, VulkanError,
 };
 
 use super::corrections::{
@@ -165,11 +165,11 @@ impl Corrections {
         let image_buffer = Buffer::new_slice::<u16>(
             memory_allocator.clone(),
             BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_SRC,
+                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_SRC | BufferUsage::TRANSFER_DST,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
             },
             (image_height * image_width) as u64,
@@ -193,11 +193,11 @@ impl Corrections {
         let result_buffer = Buffer::from_iter(
         memory_allocator.clone(),
         BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER,
+            usage: BufferUsage::STORAGE_BUFFER,
             ..Default::default()
         },
         AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS,
             ..Default::default()
         },
         vec![0u16; (image_width*image_height) as usize] /* number of elements, matching the image size */,
@@ -222,7 +222,7 @@ impl Corrections {
         }
     }
 
-    pub fn enable_dark_map_correction(&mut self, dark_map: Vec<u16>, offset: u32) {
+    pub fn enable_dark_map_correction(&mut self, dark_map: &[u16], offset: u32) {
         self.dark_map_resources = Some(DarkMapBufferResources::new(
             self.device.clone(),
             self.queue.clone(),
@@ -236,20 +236,20 @@ impl Corrections {
         ));
     }
 
-    pub fn enable_gain_correction(&mut self, gain_map: Vec<f32>) {
+    pub fn enable_gain_correction(&mut self, gain_map: &[f32]) {
         self.gain_map_resources = Some(GainMapBufferResources::new(
             self.device.clone(),
             self.queue.clone(),
             self.command_buffer_allocator.clone(),
             self.memory_allocator.clone(),
             self.descriptor_set_allocator.clone(),
-            gain_map,
+            &gain_map,
             self.image_height,
             self.image_width,
         ));
     }
 
-    pub fn enable_defect_correction(&mut self, defect_map: Vec<u16>) {
+    pub fn enable_defect_correction(&mut self, defect_map: &[u16]) {
         self.defect_buffer_resources = Some(DefectMapBufferResources::new(
             self.device.clone(),
             self.queue.clone(),
@@ -262,27 +262,26 @@ impl Corrections {
         ))
     }
 
-    pub fn process_image(&mut self, image: Vec<u16>) {
+    pub fn process_image(&mut self, image: &mut [u16]) {
         let time = Instant::now();
-        self.staging_buffer.write().unwrap().copy_from_slice(image.as_slice());
-
+        self.image_buffer.write().unwrap().copy_from_slice(image);
+        println!("Time to write to staging buffer {:?}", time.elapsed());
 
         let mut builder = RecordingCommandBuffer::primary(
             self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
-            CommandBufferUsage::MultipleSubmit,
+            CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
-
-
+  
+        /*
         builder
             .copy_buffer(CopyBufferInfo::buffers(
                 self.staging_buffer.clone(),
                 self.image_buffer.clone(),
             ))
             .unwrap();
-
-
+        */
 
         if let Some(dark_map_resources) = &self.dark_map_resources {
             dark_map_resources.apply_pipeline(
@@ -314,35 +313,57 @@ impl Corrections {
                 self.result_buffer.clone(),
             );
         }
+        
 
-        builder
-        .copy_buffer(CopyBufferInfo::buffers(
-            self.image_buffer.clone(),
-            self.readback_buffer.clone(),
-        ))
-        .unwrap();
-
-
-        //println!("2 {:?}", time.elapsed());
+        if (self.defect_buffer_resources.is_some()) {
+            /*
+            builder
+            .copy_buffer(CopyBufferInfo::buffers(
+                self.result_buffer.clone(),
+                self.readback_buffer.clone(),
+            ))
+            .unwrap();
+            */
+        } else {
+            /*
+            builder
+            .copy_buffer(CopyBufferInfo::buffers(
+                self.image_buffer.clone(),
+                self.readback_buffer.clone(),
+            ))
+            .unwrap();
+            */
+        }
 
 
         let command_buffer = builder.end().unwrap();
 
-        let time: Instant = Instant::now();
-
         let future = sync::now(self.device.clone())
             .then_execute(self.queue.clone(), command_buffer)
             .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap();
+            .then_signal_fence_and_flush();
 
-        future.wait(None).unwrap();
+        let time = Instant::now();
 
-        let mut data = self.readback_buffer.read().unwrap().to_vec();
-        let ptr = data.as_mut_ptr();
-        println!("Building primary buffer {:?}", time.elapsed());
+        match future.map_err(Validated::unwrap) {
+            Ok(future) => {
+                future.wait(None).unwrap();
+                println!("Time to compute {:?}", time.elapsed());
+                let time = Instant::now();
+                image.copy_from_slice(&self.result_buffer.read().unwrap());
+                println!("Time to write {:?}", time.elapsed());            }
+            Err(VulkanError::OutOfDate) => {
+                println!("Got error out of date");
+            }
+            Err(e) => {
+                println!("failed to flush future: {e}");
+                // previous_frame_end = Some(sync::now(device.clone()).boxed());
+            }
+        }
 
-        mem::forget(data);
+
+
+
     }
 }
 
@@ -363,25 +384,27 @@ mod tests {
 
         let mut correction_context =
             Corrections::new(gpu_resources.1.clone(), gpu_resources.0.clone(), image_width, image_height);
-
+        let mut image = vec![10u16; (image_height * image_width) as usize];
         let mut defect_map = vec![1u16; (image_height * image_width) as usize];
         let gain_map = vec![0.5f32; (image_height * image_width) as usize];
         let dark_map = vec![1u16; (image_height * image_width) as usize];
 
         defect_map[0] = 1;
         defect_map[1] = 0;
-
-        correction_context.enable_dark_map_correction(dark_map, offset);
-        //correction_context.enable_gain_correction(gain_map);
-        //correction_context.enable_defect_correction(defect_map);
+        defect_map[2] = 0;
+        image[1] = 20;
+        image[2] = 10;
+ 
+        correction_context.enable_dark_map_correction(&dark_map, offset);
+        //correction_context.enable_gain_correction(&gain_map);
+        //correction_context.enable_defect_correction(&defect_map);
+        let time = Instant::now();
 
         for i in 0..100 {
-            let time = Instant::now();
-            let mut image = vec![0u16; (image_height * image_width) as usize];
-            correction_context.process_image(image);
-            println!("{:?}", time.elapsed());
+            correction_context.process_image(&mut image);
         }
-    
+        println!("Time to process image {:?}", time.elapsed() / 100);
+
 
     }
 }

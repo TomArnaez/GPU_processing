@@ -33,7 +33,7 @@ impl GainMapBufferResources {
         command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
         memory_allocator: Arc<StandardMemoryAllocator>,
         descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-        gain_map: Vec<f32>,
+        gain_map: &[f32],
         image_height: u32,
         image_width: u32,
     ) -> Self {
@@ -84,7 +84,7 @@ impl GainMapBufferResources {
             .unwrap()
         };
 
-        let gain_map_buffer = Buffer::from_iter(
+        let gain_map_buffer = Buffer::new_slice(
             memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER,
@@ -95,9 +95,11 @@ impl GainMapBufferResources {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            gain_map, /* number of elements, matching the image size */
+            (image_height * image_width) as u64, /* number of elements, matching the image size */
         )
         .unwrap();
+        
+        gain_map_buffer.write().unwrap().copy_from_slice(&gain_map);
 
         let builder = RecordingCommandBuffer::primary(
             command_buffer_allocator,

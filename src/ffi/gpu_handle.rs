@@ -41,19 +41,13 @@ pub extern "C" fn set_dark_map(
     }
 
     let gpu_handle = unsafe { &mut *gpu_handle };
-    let size: usize = (width * height) as usize;
-    let dark_map: Vec<u16> = unsafe {
-        Vec::from_raw_parts(
-            dark_map_data,
-            size,
-            size,
-        )
-    };
+    let dark_map =
+        unsafe { std::slice::from_raw_parts(dark_map_data, (width * height) as usize) };
     unsafe {
         gpu_handle
             .correction_context
             .as_mut()
-            .enable_dark_map_correction(dark_map, 300);
+            .enable_dark_map_correction(&dark_map, 300);
     };
 }
 
@@ -70,13 +64,8 @@ pub extern "C" fn set_gain_map(
 
     let gpu_handle: &mut GPUHandle = unsafe { &mut *gpu_handle };
     let size = (width * height) as usize;
-    let gain_map: Vec<f32> = unsafe {
-        Vec::from_raw_parts(
-            gain_map_data,
-            (width * height) as usize,
-            (width * height) as usize,
-        )
-    };
+    let gain_map =
+        unsafe { std::slice::from_raw_parts(gain_map_data, (width * height) as usize) };
     unsafe {
         gpu_handle
             .correction_context
@@ -97,14 +86,8 @@ pub extern "C" fn set_defect_map(
     }
 
     let gpu_handle = unsafe { &mut *gpu_handle };
-    let size: usize = (width * height) as usize;
-    let defect_map: Vec<u16> = unsafe {
-        Vec::from_raw_parts(
-            defect_map_data,
-            (width * height) as usize,
-            (width * height) as usize,
-        )
-    };
+    let defect_map =
+        unsafe { std::slice::from_raw_parts(defect_map_data, (width * height) as usize) };
     unsafe {
         gpu_handle
             .correction_context
@@ -120,15 +103,14 @@ pub extern "C" fn process_image(
     width: u32,
     height: u32,
 ) {
+    let time = Instant::now();
     if gpu_handle.is_null() {
         return;
     }
-
-    let size = (width * height) as usize;
-    let gpu_handle: &mut GPUHandle = unsafe { &mut *gpu_handle };
-    let image: Vec<u16> =
-        unsafe { Vec::from_raw_parts(data, (width * height) as usize, (width * height) as usize) };
-    let result = unsafe { gpu_handle.correction_context.as_mut().process_image(image) };
+    let image =
+        unsafe { std::slice::from_raw_parts_mut(data, (width * height) as usize) };
+    unsafe { (*gpu_handle).correction_context.as_mut().process_image(image.as_mut()) };
+    println!("Total time in RUST: {:?}", time.elapsed());
 }
 
 #[no_mangle]
@@ -144,7 +126,7 @@ pub extern "C" fn free_gpu_handle(handle: *mut GPUHandle) {
 mod tests {
     use std::time::Instant;
 
-    use super::{GPUHandle, create_gpu_handle, set_dark_map};
+    use super::{GPUHandle, create_gpu_handle, set_dark_map, process_image};
 
 
     #[test]
@@ -155,6 +137,7 @@ mod tests {
         let mut data = vec![1u16; (image_height * image_width) as usize];
 
         let handle = create_gpu_handle(image_width, image_height);
+        process_image(handle, data.as_mut_ptr(), image_width as u32, image_height as u32);
         //set_dark_map(handle, data.as_mut_ptr(), image_width, image_height);
     }
 }

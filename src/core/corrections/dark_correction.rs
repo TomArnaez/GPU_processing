@@ -33,7 +33,7 @@ impl DarkMapBufferResources {
         command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
         memory_allocator: Arc<StandardMemoryAllocator>,
         descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-        dark_map: Vec<u16>,
+        dark_map: &[u16],
         offset: u32,
         image_height: u32,
         image_width: u32,
@@ -84,7 +84,7 @@ impl DarkMapBufferResources {
             .unwrap()
         };
 
-        let dark_map_buffer = Buffer::from_iter(
+        let dark_map_buffer = Buffer::new_slice(
             memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER,
@@ -95,9 +95,11 @@ impl DarkMapBufferResources {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            dark_map, /* number of elements, matching the image size */
+            (image_width * image_height) as u64, /* number of elements, matching the image size */
         )
         .unwrap();
+
+        dark_map_buffer.write().unwrap().copy_from_slice(dark_map);
 
         let builder = RecordingCommandBuffer::primary(
             command_buffer_allocator,
