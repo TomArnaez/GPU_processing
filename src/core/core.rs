@@ -1,12 +1,17 @@
-use std::{sync::Arc, time::Instant, mem};
+use std::{
+    io, mem,
+    os::windows::io::AsHandle,
+    sync::{Arc, Mutex, RwLock},
+    time::Instant,
+};
 
+use futures::lock;
 use log::debug;
 
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        allocator::StandardCommandBufferAllocator, CommandBufferUsage, CopyBufferInfo,
-        RecordingCommandBuffer,
+        allocator::StandardCommandBufferAllocator, CommandBufferUsage, RecordingCommandBuffer,
     },
     descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::{
@@ -14,11 +19,9 @@ use vulkano::{
         QueueCreateInfo, QueueFlags,
     },
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::{allocator::{
-        AllocationCreateInfo, GenericMemoryAllocator, MemoryTypeFilter, StandardMemoryAllocator,
-    }, MemoryAllocateInfo},
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     sync::{self, GpuFuture},
-    VulkanLibrary, Validated, VulkanError,
+    Validated, VulkanError, VulkanLibrary,
 };
 
 use super::corrections::{
@@ -113,21 +116,31 @@ pub fn initialise_gpu_resources() -> (Arc<Queue>, Arc<Device>) {
     (queue, device)
 }
 
+pub struct CorrectionsInner {
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    image_buffers: Arc<Vec<Subbuffer<[u16]>>>,
+    result_buffer: Vec<Vec<u16>>,
+    width: u32,
+    height: u32,
+    dark_map_resources: Arc<Option<DarkMapBufferResources>>,
+    head_index: usize,
+}
+
 pub struct Corrections {
     device: Arc<Device>,
     queue: Arc<Queue>,
     memory_allocator: Arc<StandardMemoryAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    image_buffer: Subbuffer<[u16]>,
     result_buffer: Subbuffer<[u16]>,
     readback_buffer: Subbuffer<[u16]>,
-    staging_buffer: Subbuffer<[u16]>,
+    staging_buffers: Vec<Subbuffer<[u16]>>,
     image_width: u32,
     image_height: u32,
-    dark_map_resources: Option<DarkMapBufferResources>,
     defect_buffer_resources: Option<DefectMapBufferResources>,
     gain_map_resources: Option<GainMapBufferResources>,
+    inner: Arc<RwLock<CorrectionsInner>>,
 }
 
 impl Corrections {
@@ -136,6 +149,7 @@ impl Corrections {
         queue: Arc<Queue>,
         image_width: u32,
         image_height: u32,
+        buffer_count: u32,
     ) -> Self {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
@@ -146,35 +160,6 @@ impl Corrections {
             device.clone(),
             Default::default(),
         ));
-
-        let staging_buffer = Buffer::new_slice::<u16>(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC | BufferUsage::STORAGE_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            (image_height * image_width) as u64,
-        )
-        .unwrap();
-
-        let image_buffer = Buffer::new_slice::<u16>(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_SRC | BufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-            },
-            (image_height * image_width) as u64,
-        )
-        .unwrap();
 
         let readback_buffer = Buffer::from_iter(
         memory_allocator.clone(),
@@ -204,43 +189,94 @@ impl Corrections {
     )
     .unwrap();
 
+        let mut staging_buffers = Vec::new();
+        let mut image_buffers = Vec::new();
+
+        for i in 0..buffer_count {
+            staging_buffers.push(
+                Buffer::new_slice::<u16>(
+                    memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::TRANSFER_SRC | BufferUsage::STORAGE_BUFFER,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                        ..Default::default()
+                    },
+                    (image_height * image_width) as u64,
+                )
+                .unwrap(),
+            );
+
+            image_buffers.push(
+                Buffer::new_slice::<u16>(
+                    memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::STORAGE_BUFFER
+                            | BufferUsage::TRANSFER_SRC
+                            | BufferUsage::TRANSFER_DST,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                        ..Default::default()
+                    },
+                    (image_height * image_width) as u64,
+                )
+                .unwrap(),
+            );
+        }
         Corrections {
-            device,
-            queue,
+            device: device.clone(),
+            queue: queue.clone(),
             memory_allocator,
             descriptor_set_allocator,
-            command_buffer_allocator,
-            image_buffer,
-            staging_buffer,
+            staging_buffers,
             readback_buffer,
             result_buffer,
             image_width,
             image_height,
-            dark_map_resources: None,
             defect_buffer_resources: None,
             gain_map_resources: None,
+            inner: Arc::new(RwLock::new(CorrectionsInner {
+                queue: queue.clone(),
+                device: device.clone(),
+                image_buffers: Arc::new(image_buffers),
+                result_buffer: Vec::new(),
+                command_buffer_allocator,
+                width: image_width,
+                height: image_height,
+                dark_map_resources: Arc::new(None),
+                head_index: 0,
+            })),
         }
     }
 
     pub fn enable_dark_map_correction(&mut self, dark_map: &[u16], offset: u32) {
-        self.dark_map_resources = Some(DarkMapBufferResources::new(
+        let mut inner_lock = self.inner.write().unwrap();
+        inner_lock.dark_map_resources = Arc::new(Some(DarkMapBufferResources::new(
             self.device.clone(),
             self.queue.clone(),
-            self.command_buffer_allocator.clone(),
+            inner_lock.command_buffer_allocator.clone(),
             self.memory_allocator.clone(),
             self.descriptor_set_allocator.clone(),
             dark_map,
             offset,
             self.image_height,
             self.image_width,
-        ));
+        )));
     }
 
     pub fn enable_gain_correction(&mut self, gain_map: &[f32]) {
+        let mut inner_lock = self.inner.write().unwrap();
+
         self.gain_map_resources = Some(GainMapBufferResources::new(
             self.device.clone(),
             self.queue.clone(),
-            self.command_buffer_allocator.clone(),
+            inner_lock.command_buffer_allocator.clone(),
             self.memory_allocator.clone(),
             self.descriptor_set_allocator.clone(),
             &gain_map,
@@ -250,10 +286,12 @@ impl Corrections {
     }
 
     pub fn enable_defect_correction(&mut self, defect_map: &[u16]) {
+        let mut inner_lock = self.inner.write().unwrap();
+
         self.defect_buffer_resources = Some(DefectMapBufferResources::new(
             self.device.clone(),
             self.queue.clone(),
-            self.command_buffer_allocator.clone(),
+            inner_lock.command_buffer_allocator.clone(),
             self.memory_allocator.clone(),
             self.descriptor_set_allocator.clone(),
             defect_map,
@@ -262,18 +300,73 @@ impl Corrections {
         ))
     }
 
-    pub fn process_image(&mut self, image: &mut [u16]) {
-        let time = Instant::now();
-        self.image_buffer.write().unwrap().copy_from_slice(image);
-        println!("Time to write to staging buffer {:?}", time.elapsed());
+    pub fn process_image(&mut self) {
+        let inner = self.inner.clone();
 
-        let mut builder = RecordingCommandBuffer::primary(
-            self.command_buffer_allocator.clone(),
-            self.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-  
+        tokio::spawn(async move {
+            let time = Instant::now();
+            println!("Running {:?}", time);
+
+            let mut inner_lock = inner.write().unwrap();
+            let head_index = inner_lock.head_index;
+            inner_lock.head_index += 1;
+
+            let device = inner_lock.device.clone();
+            let queue = inner_lock.queue.clone();
+            let command_buffer_allocator = inner_lock.command_buffer_allocator.clone();
+            let image_buffers = inner_lock.image_buffers.clone();
+            let width = inner_lock.width;
+            let height = inner_lock.height;
+            let dark_map_resources = inner_lock.dark_map_resources.clone();
+            println!("Locking time {:?}", time.elapsed());
+            drop(inner_lock);
+
+            image_buffers[head_index].write().unwrap();
+
+            let mut builder = RecordingCommandBuffer::primary(
+                command_buffer_allocator.clone(),
+                queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
+
+            if let Some(dark_map_resources) = dark_map_resources.as_ref() {
+                println!("Applying dark correction");
+                dark_map_resources.apply_pipeline(
+                    &mut builder,
+                    width,
+                    height,
+                    image_buffers[head_index].clone(),
+                );
+            }
+
+            let command_buffer = builder.end().unwrap();
+
+            let future = sync::now(device.clone())
+                .then_execute(queue.clone(), command_buffer)
+                .unwrap()
+                .then_signal_fence_and_flush();
+
+            let time = Instant::now();
+
+            match future.map_err(Validated::unwrap) {
+                Ok(future) => {
+                    future.wait(None).unwrap();
+                    println!(
+                        "Receiving data for head index {}, took time {:?}",
+                        head_index,
+                        time.elapsed()
+                    );
+                    let data = image_buffers[head_index].read().unwrap().to_vec();
+                    println!("Async task completed {:?}", time);
+                }
+                Err(e) => {}
+            }
+        });
+
+        /*
+
+
         /*
         builder
             .copy_buffer(CopyBufferInfo::buffers(
@@ -288,32 +381,30 @@ impl Corrections {
                 &mut builder,
                 self.image_width,
                 self.image_height,
-                self.image_buffer.clone(),
+                self.image_buffers[0]
+                .clone(),
             );
         }
-
 
         if let Some(gain_map_resources) = &self.gain_map_resources {
             gain_map_resources.apply_pipeline(
                 &mut builder,
                 self.image_width,
                 self.image_height,
-                self.image_buffer.clone(),
+                self.image_buffers[0].clone(),
                 self.result_buffer.clone(),
             );
         }
-
 
         if let Some(defect_map_resources) = &self.defect_buffer_resources {
             defect_map_resources.apply_pipeline(
                 &mut builder,
                 self.image_width,
                 self.image_height,
-                self.image_buffer.clone(),
+                self.image_buffers[0].clone(),
                 self.result_buffer.clone(),
             );
         }
-        
 
         if (self.defect_buffer_resources.is_some()) {
             /*
@@ -335,7 +426,6 @@ impl Corrections {
             */
         }
 
-
         let command_buffer = builder.end().unwrap();
 
         let future = sync::now(self.device.clone())
@@ -351,23 +441,15 @@ impl Corrections {
                 println!("Time to compute {:?}", time.elapsed());
                 let time = Instant::now();
                 image.copy_from_slice(&self.result_buffer.read().unwrap());
-                println!("Time to write {:?}", time.elapsed());            }
-            Err(VulkanError::OutOfDate) => {
-                println!("Got error out of date");
+                println!("Time to write {:?}", time.elapsed());
             }
             Err(e) => {
                 println!("failed to flush future: {e}");
-                // previous_frame_end = Some(sync::now(device.clone()).boxed());
             }
         }
-
-
-
-
+        */
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -375,15 +457,21 @@ mod tests {
 
     use super::{initialise_gpu_resources, Corrections};
 
-    #[test]
-    fn test() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test() {
         let gpu_resources = initialise_gpu_resources();
         let image_width: u32 = 4800;
         let image_height: u32 = 5800;
         let offset = 300;
+        let buffer_count = 10;
 
-        let mut correction_context =
-            Corrections::new(gpu_resources.1.clone(), gpu_resources.0.clone(), image_width, image_height);
+        let mut correction_context = Corrections::new(
+            gpu_resources.1.clone(),
+            gpu_resources.0.clone(),
+            image_width,
+            image_height,
+            buffer_count,
+        );
         let mut image = vec![10u16; (image_height * image_width) as usize];
         let mut defect_map = vec![1u16; (image_height * image_width) as usize];
         let gain_map = vec![0.5f32; (image_height * image_width) as usize];
@@ -394,17 +482,16 @@ mod tests {
         defect_map[2] = 0;
         image[1] = 20;
         image[2] = 10;
- 
+
         correction_context.enable_dark_map_correction(&dark_map, offset);
         //correction_context.enable_gain_correction(&gain_map);
         //correction_context.enable_defect_correction(&defect_map);
         let time = Instant::now();
 
-        for i in 0..100 {
-            correction_context.process_image(&mut image);
+        for i in 0..buffer_count {
+            correction_context.process_image();
         }
-        println!("Time to process image {:?}", time.elapsed() / 100);
-
-
+        println!("Time to process image {:?}", time.elapsed() / buffer_count);
+        loop {}
     }
 }

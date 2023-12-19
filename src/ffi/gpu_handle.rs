@@ -8,10 +8,7 @@ pub struct GPUHandle {
 }
 
 #[no_mangle]
-pub extern "C" fn create_gpu_handle(
-    width: u32,
-    height: u32,
-) -> *mut GPUHandle {
+pub extern "C" fn create_gpu_handle(width: u32, height: u32, buffer_count: u32) -> *mut GPUHandle {
     // Allocate GPUResources and check for errors
     let gpu_resources = initialise_gpu_resources();
 
@@ -20,6 +17,7 @@ pub extern "C" fn create_gpu_handle(
         gpu_resources.0.clone(),
         width,
         height,
+        buffer_count,
     ));
 
     let handle = Box::new(GPUHandle {
@@ -41,8 +39,7 @@ pub extern "C" fn set_dark_map(
     }
 
     let gpu_handle = unsafe { &mut *gpu_handle };
-    let dark_map =
-        unsafe { std::slice::from_raw_parts(dark_map_data, (width * height) as usize) };
+    let dark_map = unsafe { std::slice::from_raw_parts(dark_map_data, (width * height) as usize) };
     unsafe {
         gpu_handle
             .correction_context
@@ -64,8 +61,7 @@ pub extern "C" fn set_gain_map(
 
     let gpu_handle: &mut GPUHandle = unsafe { &mut *gpu_handle };
     let size = (width * height) as usize;
-    let gain_map =
-        unsafe { std::slice::from_raw_parts(gain_map_data, (width * height) as usize) };
+    let gain_map = unsafe { std::slice::from_raw_parts(gain_map_data, (width * height) as usize) };
     unsafe {
         gpu_handle
             .correction_context
@@ -107,9 +103,8 @@ pub extern "C" fn process_image(
     if gpu_handle.is_null() {
         return;
     }
-    let image =
-        unsafe { std::slice::from_raw_parts_mut(data, (width * height) as usize) };
-    unsafe { (*gpu_handle).correction_context.as_mut().process_image(image.as_mut()) };
+    let image = unsafe { std::slice::from_raw_parts_mut(data, (width * height) as usize) };
+    unsafe { (*gpu_handle).correction_context.as_mut().process_image() };
     println!("Total time in RUST: {:?}", time.elapsed());
 }
 
@@ -126,8 +121,7 @@ pub extern "C" fn free_gpu_handle(handle: *mut GPUHandle) {
 mod tests {
     use std::time::Instant;
 
-    use super::{GPUHandle, create_gpu_handle, set_dark_map, process_image};
-
+    use super::{create_gpu_handle, process_image, set_dark_map, GPUHandle};
 
     #[test]
     fn test() {
@@ -136,8 +130,13 @@ mod tests {
         let offset = 300;
         let mut data = vec![1u16; (image_height * image_width) as usize];
 
-        let handle = create_gpu_handle(image_width, image_height);
-        process_image(handle, data.as_mut_ptr(), image_width as u32, image_height as u32);
+        let handle = create_gpu_handle(image_width, image_height, 10);
+        process_image(
+            handle,
+            data.as_mut_ptr(),
+            image_width as u32,
+            image_height as u32,
+        );
         //set_dark_map(handle, data.as_mut_ptr(), image_width, image_height);
     }
 }

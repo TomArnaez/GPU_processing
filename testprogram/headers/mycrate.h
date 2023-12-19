@@ -12,7 +12,7 @@ struct GPUHandle {
 
 extern "C" {
 
-GPUHandle *create_gpu_handle(uint32_t width, uint32_t height);
+GPUHandle *create_gpu_handle(uint32_t width, uint32_t height, uint32_t buffer_count);
 
 void set_dark_map(GPUHandle *gpu_handle, uint16_t *dark_map_data, uint32_t width, uint32_t height);
 
